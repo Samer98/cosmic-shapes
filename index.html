@@ -192,6 +192,73 @@
     background: rgba(255,255,255,0.12);
   }
 
+  .forge-form {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+  }
+
+  .forge-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px;
+    border-radius: 50px;
+    border: 1px solid rgba(255,255,255,0.16);
+    background: rgba(255,255,255,0.07);
+    backdrop-filter: blur(var(--blur));
+    -webkit-backdrop-filter: blur(var(--blur));
+  }
+
+  .forge-input {
+    appearance: none;
+    -webkit-appearance: none;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text-primary);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 300;
+    letter-spacing: 0.02em;
+  }
+
+  .forge-input.word { width: 150px; }
+  .forge-input.seed { width: 92px; }
+
+  .forge-input::placeholder {
+    color: rgba(255,255,255,0.38);
+  }
+
+  #forge-generate {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 10px 18px;
+    border-radius: 50px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: var(--font);
+    color: var(--text-primary);
+    border: none;
+    outline: none;
+    background: rgba(255,255,255,0.10);
+    border: 1px solid rgba(255,255,255,0.18);
+    backdrop-filter: blur(var(--blur));
+    -webkit-backdrop-filter: blur(var(--blur));
+    box-shadow: 0 4px 18px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.12);
+    transition: all 0.2s ease;
+    white-space: nowrap;
+  }
+  #forge-generate:hover {
+    background: rgba(255,255,255,0.16);
+    transform: translateY(-1px);
+    box-shadow: 0 8px 26px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.16);
+  }
+  #forge-generate:active { transform: translateY(0); }
+
   #execute-btn {
     display: flex;
     align-items: center;
@@ -323,6 +390,22 @@
 
   <div class="panel-divider"></div>
 
+  <form id="forge-form" class="forge-form glass" autocomplete="off">
+    <div class="forge-field" title="Text drives a deterministic shape">
+      <input id="forge-text" class="forge-input word" type="text" maxlength="32" placeholder="Type text…" value="COSMIC" />
+      <input id="forge-seed" class="forge-input seed" type="number" min="0" step="1" placeholder="Seed" value="1" />
+    </div>
+    <button id="forge-generate" type="submit" title="Generate a seeded random shape from text">
+      <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2v4"/><path d="M12 18v4"/><path d="M4.93 4.93l2.83 2.83"/><path d="M16.24 16.24l2.83 2.83"/>
+        <path d="M2 12h4"/><path d="M18 12h4"/><path d="M4.93 19.07l2.83-2.83"/><path d="M16.24 7.76l2.83-2.83"/>
+      </svg>
+      Generate
+    </button>
+  </form>
+
+  <div class="panel-divider"></div>
+
   <button id="execute-btn">
     <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <polygon points="5,3 19,12 5,21" fill="currentColor" stroke="none" opacity="0.8"/>
@@ -353,8 +436,8 @@ const NODE_COUNT  = 24000;
 const TRAIL_COUNT = 6000;
 const TRANSFORM_SPEED = 0.018;
 
-const VIZ_NAMES = ['Auroral Flow', 'Crystal Lattice', 'Plasma Dipole'];
-const BLOOM_STRENGTHS = [0.28, 0.55, 0.38];
+const VIZ_NAMES = ['Auroral Flow', 'Crystal Lattice', 'Plasma Dipole', 'Seeded Glyph'];
+const BLOOM_STRENGTHS = [0.28, 0.55, 0.38, 0.44];
 
 const PALETTES = [
   [
@@ -374,6 +457,12 @@ const PALETTES = [
     new THREE.Color(0xffaa22), new THREE.Color(0xffdd66),
     new THREE.Color(0xffffff), new THREE.Color(0xff4400),
     new THREE.Color(0xff8800), new THREE.Color(0xffcc44)
+  ],
+  [
+    new THREE.Color(0xb9d4ff), new THREE.Color(0xffffff),
+    new THREE.Color(0x8be8ff), new THREE.Color(0xa8f5e8),
+    new THREE.Color(0xffd5e8), new THREE.Color(0xd0b4f5),
+    new THREE.Color(0xffcc44), new THREE.Color(0xff6a00)
   ]
 ];
 
@@ -478,6 +567,177 @@ function genPlasmaDipole(i, count) {
 
 const GENERATORS = [genAuroralFlow, genCrystalLattice, genPlasmaDipole];
 
+let seededText = 'COSMIC';
+let seededUserSeed = 1;
+let seededCache = null; // Float32Array(NODE_COUNT*3)
+
+function _u32(n) { return n >>> 0; }
+
+function hashStringToU32(str) {
+  // FNV-1a 32-bit
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function makePRNG(seedU32) {
+  let s = _u32(seedU32 || 1);
+  return function rand01() {
+    // LCG
+    s = _u32(Math.imul(s, 1664525) + 1013904223);
+    return s / 4294967296;
+  };
+}
+
+function buildTextPoints(text, rand01) {
+  const txt = (text || 'COSMIC').trim().slice(0, 32) || 'COSMIC';
+  const c = document.createElement('canvas');
+  c.width = 520; c.height = 220;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.clearRect(0, 0, c.width, c.height);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, c.width, c.height);
+
+  const fontFamily = (getComputedStyle(document.body).fontFamily || 'DM Sans, sans-serif');
+  const fontSize = 132;
+  ctx.font = `700 ${fontSize}px ${fontFamily}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#fff';
+  ctx.fillText(txt, c.width / 2, c.height / 2 + 6);
+
+  const w = c.width, h = c.height;
+  const img = ctx.getImageData(0, 0, w, h).data;
+  const alphaAt = (x, y) => img[(y * w + x) * 4 + 3];
+  const pts = [];
+  const edge = [];
+
+  for (let y = 1; y < h - 1; y += 1) {
+    for (let x = 1; x < w - 1; x += 1) {
+      const a = alphaAt(x, y);
+      if (a <= 40) continue;
+      pts.push([x, y]);
+      const isEdge =
+        alphaAt(x - 1, y) <= 40 ||
+        alphaAt(x + 1, y) <= 40 ||
+        alphaAt(x, y - 1) <= 40 ||
+        alphaAt(x, y + 1) <= 40;
+      if (isEdge) edge.push([x, y]);
+    }
+  }
+
+  const pick = edge.length ? edge : pts;
+  if (!pick.length) return null;
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of pick) {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const bw = Math.max(1, maxX - minX);
+  const bh = Math.max(1, maxY - minY);
+  const scale = 118 / Math.max(bw, bh);
+
+  const out = new Float32Array(NODE_COUNT * 3);
+  for (let i = 0; i < NODE_COUNT; i++) {
+    const idx = (i * 131 + Math.floor(rand01() * 17)) % pick.length;
+    const [px, py] = pick[idx];
+    out[i * 3] = (px - cx) * scale;
+    out[i * 3 + 1] = -(py - cy) * scale;
+    out[i * 3 + 2] = 0;
+  }
+  return out;
+}
+
+function buildSeededShape(rand01) {
+  // Deterministic "random" choice and parameters driven by text+seed
+  const choices = ['sphere', 'torus', 'knot', 'helix', 'text'];
+  const choice = choices[Math.floor(rand01() * choices.length)];
+
+  // common params
+  const jitter = 1.5 + rand01() * 3.5;
+  const base = 50 + rand01() * 22;
+  const out = new Float32Array(NODE_COUNT * 3);
+
+  if (choice === 'text') {
+    return buildTextPoints(seededText, rand01);
+  }
+
+  for (let i = 0; i < NODE_COUNT; i++) {
+    const u = rand01();
+    const v = rand01();
+    let x = 0, y = 0, z = 0;
+
+    if (choice === 'sphere') {
+      const th = Math.acos(1 - 2 * u);
+      const ph = Math.PI * 2 * v;
+      const r = base + (rand01() - 0.5) * jitter;
+      x = r * Math.sin(th) * Math.cos(ph);
+      y = r * Math.cos(th);
+      z = r * Math.sin(th) * Math.sin(ph);
+    } else if (choice === 'torus') {
+      const a = Math.PI * 2 * u;
+      const b = Math.PI * 2 * v;
+      const R = base + rand01() * 14;
+      const r = 10 + rand01() * 10;
+      x = (R + r * Math.cos(b)) * Math.cos(a);
+      y = r * Math.sin(b);
+      z = (R + r * Math.cos(b)) * Math.sin(a);
+    } else if (choice === 'helix') {
+      const t = Math.PI * 2 * (u * 4);
+      const r = 28 + rand01() * 34;
+      const pitch = 9 + rand01() * 12;
+      x = r * Math.cos(t);
+      z = r * Math.sin(t);
+      y = (u - 0.5) * (pitch * 10);
+      const wob = (rand01() - 0.5) * jitter;
+      x += wob;
+      z -= wob;
+    } else {
+      // knot
+      const t = Math.PI * 2 * u;
+      const p = 2 + Math.floor(rand01() * 3);
+      const q = 3 + Math.floor(rand01() * 3);
+      const R = 40 + rand01() * 18;
+      const r = 14 + rand01() * 14;
+      const cq = Math.cos(q * t), sq = Math.sin(q * t);
+      const cp = Math.cos(p * t), sp = Math.sin(p * t);
+      const baseX = (R + r * cq) * cp;
+      const baseY = (R + r * cq) * sp;
+      const baseZ = r * sq;
+      const j = (rand01() - 0.5) * jitter * 1.6;
+      x = baseX + j;
+      y = baseY - j;
+      z = baseZ + (rand01() - 0.5) * jitter;
+    }
+
+    out[i * 3] = x;
+    out[i * 3 + 1] = y;
+    out[i * 3 + 2] = z;
+  }
+  return out;
+}
+
+function genSeededGlyph(i) {
+  if (!seededCache) {
+    const seedU32 = _u32(hashStringToU32(seededText) ^ _u32(seededUserSeed));
+    const rand01 = makePRNG(seedU32 || 1);
+    seededCache = buildSeededShape(rand01);
+  }
+  if (!seededCache) return new THREE.Vector3(0, 0, 0);
+  const ix = i * 3;
+  return new THREE.Vector3(seededCache[ix], seededCache[ix + 1], seededCache[ix + 2]);
+}
+
+GENERATORS.push(genSeededGlyph);
+
 function assignProps(i, colors, sizes, vizIdx) {
   const pal = PALETTES[vizIdx];
   let color, brightness;
@@ -492,7 +752,7 @@ function assignProps(i, colors, sizes, vizIdx) {
     color = pal[shell % pal.length];
     brightness = 0.7 + Math.random() * 0.6;
     sizes[i] = 0.5 + Math.random() * 1.8;
-  } else {
+  } else if (vizIdx === 2) {
     const FIELD_END = Math.floor(NODE_COUNT * 0.45);
     const DISK_END  = FIELD_END + Math.floor(NODE_COUNT * 0.38);
     if (i < FIELD_END) {
@@ -509,6 +769,10 @@ function assignProps(i, colors, sizes, vizIdx) {
       brightness = 0.85 + Math.random() * 0.5;
       sizes[i] = 0.6 + Math.random() * 2.0;
     }
+  } else {
+    color = pal[i % pal.length];
+    brightness = 0.55 + Math.random() * 0.75;
+    sizes[i] = 0.55 + Math.random() * 2.0;
   }
 
   colors[i*3]   = color.r * brightness;
@@ -864,6 +1128,28 @@ function setupEvents() {
     startTransform(next);
     const name = VIZ_NAMES[next];
     document.getElementById('mode-display').textContent = name;
+  });
+
+  const forgeForm = document.getElementById('forge-form');
+  const forgeTextEl = document.getElementById('forge-text');
+  const forgeSeedEl = document.getElementById('forge-seed');
+
+  function applySeeded() {
+    seededText = (forgeTextEl?.value ?? '').trim().slice(0, 32) || 'COSMIC';
+    const seedNum = Number.parseInt(String(forgeSeedEl?.value ?? '1'), 10);
+    seededUserSeed = Number.isFinite(seedNum) ? (seedNum >>> 0) : 1;
+    seededCache = null;
+
+    const vizIdx = 3;
+    if (!isTransforming) {
+      startTransform(vizIdx);
+      document.getElementById('mode-display').textContent = VIZ_NAMES[vizIdx];
+    }
+  }
+
+  forgeForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    applySeeded();
   });
 
   const toggle = document.getElementById('controls-toggle');
