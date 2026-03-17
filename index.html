@@ -879,7 +879,7 @@ function genSeededGlyph(i) {
 
 GENERATORS.push(genSeededGlyph);
 
-function assignProps(i, colors, sizes, vizIdx) {
+function assignProps(i, position, colors, sizes, vizIdx) {
   const pal = PALETTES[vizIdx];
   let color, brightness;
 
@@ -910,6 +910,23 @@ function assignProps(i, colors, sizes, vizIdx) {
       brightness = 0.85 + Math.random() * 0.5;
       sizes[i] = 0.6 + Math.random() * 2.0;
     }
+  } else if (vizIdx === 3) {
+    const x = position?.x ?? 0;
+    const y = position?.y ?? 0;
+    const z = position?.z ?? 0;
+    const radius = Math.sqrt(x * x + y * y + z * z);
+    const outerMix = Math.min(Math.max((radius - 56) / 40, 0), 1);
+    const baseIdx = Math.floor((i / NODE_COUNT) * pal.length) % pal.length;
+    const cool = pal[(baseIdx + 2) % pal.length];
+    const warm = pal[(baseIdx + 6) % pal.length];
+    const t = Math.min(1, outerMix * 0.85 + Math.random() * 0.15);
+    color = {
+      r: cool.r + (warm.r - cool.r) * t,
+      g: cool.g + (warm.g - cool.g) * t,
+      b: cool.b + (warm.b - cool.b) * t
+    };
+    brightness = (0.55 + Math.random() * 0.65) * (1 - outerMix * 0.2);
+    sizes[i] = 0.5 + Math.random() * 1.8 + outerMix * 0.55;
   } else {
     color = pal[i % pal.length];
     brightness = 0.55 + Math.random() * 0.75;
@@ -956,7 +973,7 @@ function buildDataNodes() {
   for (let i = 0; i < NODE_COUNT; i++) {
     const p = GENERATORS[currentViz](i, NODE_COUNT);
     pos[i*3] = p.x; pos[i*3+1] = p.y; pos[i*3+2] = p.z;
-    assignProps(i, col, siz, currentViz);
+    assignProps(i, p, col, siz, currentViz);
   }
 
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
@@ -1165,7 +1182,7 @@ function startTransform(nextViz) {
   for (let i = 0; i < NODE_COUNT; i++) {
     const p = GENERATORS[nextViz](i, NODE_COUNT);
     toPos[i*3]=p.x; toPos[i*3+1]=p.y; toPos[i*3+2]=p.z;
-    assignProps(i, toCol, toSiz, nextViz);
+    assignProps(i, p, toCol, toSiz, nextViz);
   }
 
   dataNodes.userData = { fromPos, toPos, fromCol, toCol, fromSiz, toSiz, targetViz: nextViz };
