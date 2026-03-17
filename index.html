@@ -569,6 +569,7 @@ const GENERATORS = [genAuroralFlow, genCrystalLattice, genPlasmaDipole];
 
 let seededText = 'COSMIC';
 let seededUserSeed = 1;
+let seededForcedShape = 'auto'; // auto | sphere | torus | knot | helix | lissajous | superformula | shell | text
 let seededCache = null; // Float32Array(NODE_COUNT*3)
 
 function _u32(n) { return n >>> 0; }
@@ -590,6 +591,21 @@ function makePRNG(seedU32) {
     s = _u32(Math.imul(s, 1664525) + 1013904223);
     return s / 4294967296;
   };
+}
+
+function mix32(n) {
+  // Stateless 32-bit mix for deterministic parameter extraction.
+  let x = _u32(n);
+  x ^= x >>> 16;
+  x = Math.imul(x, 0x7feb352d);
+  x ^= x >>> 15;
+  x = Math.imul(x, 0x846ca68b);
+  x ^= x >>> 16;
+  return _u32(x);
+}
+
+function unitFromU32(n) {
+  return mix32(n) / 4294967295;
 }
 
 function buildTextPoints(text, rand01) {
@@ -657,56 +673,77 @@ function buildTextPoints(text, rand01) {
 }
 
 function buildSeededShape(rand01) {
-  // Deterministic "random" choice and parameters driven by text+seed
-  const choices = ['sphere', 'torus', 'knot', 'helix', 'text'];
-  const choice = choices[Math.floor(rand01() * choices.length)];
+  // Deterministic geometric profiles driven by text+seed.
+  const TAU = Math.PI * 2;
+  const textHash = hashStringToU32(seededText);
+  const seedHash = _u32(seededUserSeed || 1);
+  const profileHash = mix32(textHash ^ Math.imul(seedHash, 0x9e3779b1));
+  const choices = ['superformula', 'lissajous', 'knot', 'torus', 'helix', 'sphere', 'shell', 'text'];
+  const forced = String(seededForcedShape || 'auto').toLowerCase().trim();
+  const choice = choices.includes(forced) ? forced : choices[profileHash % choices.length];
 
-  // common params
-  const jitter = 1.5 + rand01() * 3.5;
-  const base = 50 + rand01() * 22;
+  const jitter = 0.8 + unitFromU32(profileHash + 101) * 3.1;
+  const base = 48 + unitFromU32(profileHash + 211) * 26;
+  const phaseA = TAU * unitFromU32(profileHash + 17);
+  const phaseB = TAU * unitFromU32(profileHash + 23);
+  const warpA = 2 + Math.floor(unitFromU32(profileHash + 31) * 7);
+  const warpB = 2 + Math.floor(unitFromU32(profileHash + 37) * 9);
   const out = new Float32Array(NODE_COUNT * 3);
 
   if (choice === 'text') {
-    return buildTextPoints(seededText, rand01);
+    const pts = buildTextPoints(seededText, rand01);
+    if (pts) return pts;
+  }
+
+  function superR(angle, m, n1, n2, n3) {
+    const t1 = Math.pow(Math.abs(Math.cos((m * angle) / 4)), n2);
+    const t2 = Math.pow(Math.abs(Math.sin((m * angle) / 4)), n3);
+    const den = Math.pow(t1 + t2, 1 / Math.max(0.05, n1));
+    return den === 0 ? 0 : 1 / den;
   }
 
   for (let i = 0; i < NODE_COUNT; i++) {
-    const u = rand01();
-    const v = rand01();
+    const u = (i * 0.61803398875 + unitFromU32(profileHash + i * 3 + 43)) % 1;
+    const v = (i + 0.5 + unitFromU32(profileHash + i * 5 + 59)) / NODE_COUNT;
+    const theta = TAU * u;
+    const phi = (v - 0.5) * Math.PI * 0.98;
     let x = 0, y = 0, z = 0;
 
     if (choice === 'sphere') {
-      const th = Math.acos(1 - 2 * u);
-      const ph = Math.PI * 2 * v;
-      const r = base + (rand01() - 0.5) * jitter;
-      x = r * Math.sin(th) * Math.cos(ph);
-      y = r * Math.cos(th);
-      z = r * Math.sin(th) * Math.sin(ph);
+      const radialWarp = 0.86 + 0.2 * Math.sin(theta * warpA + phaseA) * Math.cos(phi * warpB + phaseB);
+      const r = base * radialWarp + (rand01() - 0.5) * jitter;
+      x = r * Math.cos(phi) * Math.cos(theta);
+      y = r * Math.sin(phi);
+      z = r * Math.cos(phi) * Math.sin(theta);
     } else if (choice === 'torus') {
-      const a = Math.PI * 2 * u;
-      const b = Math.PI * 2 * v;
-      const R = base + rand01() * 14;
-      const r = 10 + rand01() * 10;
-      x = (R + r * Math.cos(b)) * Math.cos(a);
+      const a = theta;
+      const b = TAU * v * (2 + Math.floor(unitFromU32(profileHash + 71) * 3));
+      const R = base + 6 + unitFromU32(profileHash + 73) * 12;
+      const r = 9 + unitFromU32(profileHash + 79) * 14;
+      const ripple = 1 + 0.18 * Math.cos(warpA * a + warpB * b + phaseA);
+      x = (R + r * Math.cos(b) * ripple) * Math.cos(a);
       y = r * Math.sin(b);
-      z = (R + r * Math.cos(b)) * Math.sin(a);
+      z = (R + r * Math.cos(b) * ripple) * Math.sin(a);
     } else if (choice === 'helix') {
-      const t = Math.PI * 2 * (u * 4);
-      const r = 28 + rand01() * 34;
-      const pitch = 9 + rand01() * 12;
+      const turns = 3 + Math.floor(unitFromU32(profileHash + 83) * 5);
+      const t = TAU * (v * turns);
+      const r = 26 + unitFromU32(profileHash + 89) * 32;
+      const pitch = 8 + unitFromU32(profileHash + 97) * 13;
+      const radialWave = 1 + 0.25 * Math.sin(warpA * t + phaseB);
       x = r * Math.cos(t);
       z = r * Math.sin(t);
-      y = (u - 0.5) * (pitch * 10);
+      y = (v - 0.5) * (pitch * 12);
+      x *= radialWave;
+      z *= radialWave;
       const wob = (rand01() - 0.5) * jitter;
       x += wob;
       z -= wob;
-    } else {
-      // knot
-      const t = Math.PI * 2 * u;
-      const p = 2 + Math.floor(rand01() * 3);
-      const q = 3 + Math.floor(rand01() * 3);
-      const R = 40 + rand01() * 18;
-      const r = 14 + rand01() * 14;
+    } else if (choice === 'knot') {
+      const t = TAU * v;
+      const p = 2 + Math.floor(unitFromU32(profileHash + 103) * 5);
+      const q = 3 + Math.floor(unitFromU32(profileHash + 107) * 6);
+      const R = 36 + unitFromU32(profileHash + 109) * 26;
+      const r = 10 + unitFromU32(profileHash + 113) * 16;
       const cq = Math.cos(q * t), sq = Math.sin(q * t);
       const cp = Math.cos(p * t), sp = Math.sin(p * t);
       const baseX = (R + r * cq) * cp;
@@ -716,6 +753,43 @@ function buildSeededShape(rand01) {
       x = baseX + j;
       y = baseY - j;
       z = baseZ + (rand01() - 0.5) * jitter;
+    } else if (choice === 'lissajous') {
+      const t = TAU * v;
+      const ax = 2 + Math.floor(unitFromU32(profileHash + 127) * 7);
+      const ay = 3 + Math.floor(unitFromU32(profileHash + 131) * 7);
+      const az = 4 + Math.floor(unitFromU32(profileHash + 137) * 7);
+      const A = base * (0.7 + unitFromU32(profileHash + 139) * 0.35);
+      const B = base * (0.6 + unitFromU32(profileHash + 149) * 0.4);
+      const C = base * (0.55 + unitFromU32(profileHash + 151) * 0.45);
+      x = A * Math.sin(ax * t + phaseA);
+      y = B * Math.sin(ay * t + phaseB);
+      z = C * Math.sin(az * t + phaseA * 0.5);
+    } else if (choice === 'superformula') {
+      const m1 = 3 + Math.floor(unitFromU32(profileHash + 157) * 10);
+      const m2 = 2 + Math.floor(unitFromU32(profileHash + 163) * 11);
+      const n11 = 0.4 + unitFromU32(profileHash + 167) * 6.2;
+      const n12 = 0.4 + unitFromU32(profileHash + 173) * 6.6;
+      const n13 = 0.4 + unitFromU32(profileHash + 179) * 6.6;
+      const n21 = 0.4 + unitFromU32(profileHash + 181) * 6.2;
+      const n22 = 0.4 + unitFromU32(profileHash + 191) * 6.6;
+      const n23 = 0.4 + unitFromU32(profileHash + 193) * 6.6;
+      const r1 = superR(theta - Math.PI, m1, n11, n12, n13);
+      const r2 = superR(phi, m2, n21, n22, n23);
+      const s = base * 0.95;
+      x = s * r1 * Math.cos(theta) * r2 * Math.cos(phi);
+      y = s * r2 * Math.sin(phi);
+      z = s * r1 * Math.sin(theta) * r2 * Math.cos(phi);
+    } else {
+      // shell / spiral manifold
+      const t = TAU * (v * (3 + Math.floor(unitFromU32(profileHash + 199) * 5)));
+      const grow = 10 + v * (base * 1.1);
+      const ridge = 1 + 0.22 * Math.sin(t * warpA + phaseB);
+      const pinch = 0.25 + 0.75 * v;
+      x = grow * Math.cos(t) * ridge;
+      z = grow * Math.sin(t) * ridge;
+      y = (v - 0.5) * (base * 1.35) + Math.sin(t * warpB + phaseA) * base * 0.08;
+      x *= pinch;
+      z *= pinch;
     }
 
     out[i * 3] = x;
@@ -723,6 +797,73 @@ function buildSeededShape(rand01) {
     out[i * 3 + 2] = z;
   }
   return out;
+}
+
+function tokenizeFormula(input) {
+  const s = String(input ?? '').trim();
+  if (!s) return [];
+  // Split by whitespace, but keep quoted strings intact.
+  const out = [];
+  let cur = '';
+  let q = null;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (q) {
+      if (ch === q) { q = null; continue; }
+      cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { q = ch; continue; }
+    if (/\s/.test(ch)) {
+      if (cur) out.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+function parseForgeFormula(raw) {
+  // Accept either plain text OR a key-value "formula".
+  // Examples:
+  //   COSMIC
+  //   text="HELLO WORLD" seed=42 shape=torus
+  //   shape=text text=NEBULA seed=7
+  const src = String(raw ?? '').trim();
+  const tokens = tokenizeFormula(src);
+  const looksLikeFormula = tokens.some(t => t.includes('=')) || /^shape\(/i.test(src);
+
+  if (!looksLikeFormula) {
+    return { text: src.slice(0, 32) || 'COSMIC', seed: null, shape: null };
+  }
+
+  const kv = {};
+  for (const t of tokens) {
+    const eq = t.indexOf('=');
+    if (eq <= 0) continue;
+    const k = t.slice(0, eq).toLowerCase().trim();
+    const v = t.slice(eq + 1).trim();
+    if (!k) continue;
+    kv[k] = v;
+  }
+
+  const text = (kv.text ?? kv.t ?? '').trim();
+  const shape = (kv.shape ?? kv.s ?? '').trim();
+  const seedStr = (kv.seed ?? kv.r ?? '').trim();
+
+  let seed = null;
+  if (seedStr) {
+    const seedNum = Number.parseInt(seedStr, 10);
+    seed = Number.isFinite(seedNum) ? (seedNum >>> 0) : null;
+  }
+
+  return {
+    text: (text || 'COSMIC').slice(0, 32),
+    seed,
+    shape: shape ? shape.toLowerCase() : null
+  };
 }
 
 function genSeededGlyph(i) {
@@ -1135,9 +1276,15 @@ function setupEvents() {
   const forgeSeedEl = document.getElementById('forge-seed');
 
   function applySeeded() {
-    seededText = (forgeTextEl?.value ?? '').trim().slice(0, 32) || 'COSMIC';
-    const seedNum = Number.parseInt(String(forgeSeedEl?.value ?? '1'), 10);
-    seededUserSeed = Number.isFinite(seedNum) ? (seedNum >>> 0) : 1;
+    const raw = (forgeTextEl?.value ?? '').trim();
+    const parsed = parseForgeFormula(raw);
+    seededText = (parsed.text || 'COSMIC').trim().slice(0, 32) || 'COSMIC';
+
+    const seedFromInput = Number.parseInt(String(forgeSeedEl?.value ?? '1'), 10);
+    const seedNum = parsed.seed ?? (Number.isFinite(seedFromInput) ? seedFromInput : 1);
+    seededUserSeed = (seedNum >>> 0) || 1;
+
+    seededForcedShape = parsed.shape || 'auto';
     seededCache = null;
 
     const vizIdx = 3;
